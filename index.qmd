@@ -1,0 +1,286 @@
+---
+title: "Modélisation et Dynamiques du Marché Bovin Français (1996-2026)"
+subtitle: "De la stabilité historique à la rupture inflationniste : Analyse statistique et projections par modèle ARIMA"
+author: "Faustin LAFAGE"
+date: last-modified
+lang: fr
+format:
+  html:
+    toc: true            
+    toc-location: right   
+    toc-title: "Plan de l'analyse"
+    toc-depth: 3
+    code-fold: true
+    theme: cosmo
+    embed-resources: true
+    number-sections: true 
+  pdf:                    
+    toc: true
+    number-sections: true
+    papersize: a4
+---
+
+# Présentation du projet
+Ce rapport analyse l'évolution du prix des carcasses bovines en France en s'appuyant sur les séries chronologiques de **FranceAgriMer**. L'objectif est de comprendre la structure des prix sur le long terme et d'anticiper les tendances à court terme dans un contexte de forte volatilité.
+
+## À propos des données
+Les données (COT-VRO-GBEA-A25) regroupent les cotations hebdomadaires entrée abattoir pour les catégories de la grille EUROP (conformations U, R, O, P). 
+
+> **Source :** Visionet - FranceAgriMer (Données arrêtées au 17/12/2025).
+
+## Méthodologie
+L'analyse couvre la période 1996-2025. Pour assurer la rigueur scientifique de l'étude, les traitements suivants ont été appliqués :
+
+1. **Conversion monétaire** : Les prix antérieurs au 01/01/2002 ont été convertis de Francs en Euros ($1 \text{ €} = 6,55957 \text{ FRF}$).
+2. **Standardisation** : Nettoyage des métadonnées et traitement des valeurs manquantes par interpolation.
+3. **Modélisation** : Utilisation de l'algorithme **ARIMA** pour capturer l'autocorrélation temporelle des prix.
+
+```{r setup}
+#| name: setup
+#| message: false
+#| warning: false
+#| echo: false
+
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(readxl)
+library(janitor)
+library(highcharter)
+library(viridisLite)
+library(forecast)
+library(tseries)
+library(lubridate)
+
+```
+
+```{r clean}
+#| name: clean
+#| message: false
+#| warning: false
+#| echo: false
+
+IMPORT <- read_excel("C:/Users/faust/Desktop/Modele_prix_carcasse/COT-VRO-GBEA-A25.xlsx", 
+                     sheet = "GBEA_COMMUNAUTAIRE", 
+                     range = "B5:AM1537")
+
+PRIX_CARCASSE <- IMPORT %>% 
+  select(1, 27:38) %>% 
+  clean_names() %>% 
+  rename(
+    date = 1,
+    U2 = u2_27, U3 = u3_28, U4 = u4_29,
+    R2 = r2_30, R3 = r3_31, R4 = r4_32,
+    O2 = o2_33, O3 = o3_34, O4 = o4_35,
+    P2 = p2,    P3 = p3,    P4 = p4
+  ) %>% 
+  mutate(
+    date = as.Date(date),
+    across(U2:P4, ~ as.numeric(.)),
+    across(U2:P4, ~ if_else(date < as.Date("2001-12-31"), . / 6.55957, .))
+  )
+
+PRIX_LONG <- PRIX_CARCASSE %>%
+  pivot_longer(
+    cols = U2:P4, 
+    names_to = "categorie", 
+    values_to = "prix"
+  )
+
+```
+
+# Analyse des Séries Chronologiques
+
+## Évolution Chronologique des Cotations (1996 - 2025)
+
+Ce graphique interactif présente l'évolution hebdomadaire du prix des carcasses (en €/kg net) pour l'ensemble des catégories de conformation.
+
+- **Filtrage** : Cliquez sur les catégories en légende pour isoler ou comparer des types spécifiques de carcasses.
+
+- **Navigation** : Utilisez les boutons de période ou la barre de zoom pour analyser des cycles précis.
+
+```{r highcharts-dropdown}
+#| name: highcharts-dropdown
+#| message: false
+#| warning: false
+#| echo: false
+
+hchart(PRIX_LONG, "line", hcaes(x = date, y = prix, group = categorie)) %>% 
+  hc_title(text = "Analyse comparative des cotations (1996-2025)") %>% 
+  hc_subtitle(text = "Cliquez sur les catégories en légende pour filtrer l'affichage") %>% 
+  hc_rangeSelector(
+    enabled = TRUE,
+    buttons = list(
+      list(type = 'year', count = 1, text = '1an'),
+      list(type = 'year', count = 5, text = '5ans'),
+      list(type = 'year', count = 10, text = '10ans'),
+      list(type = 'all', text = 'Tout')
+    ),
+    selected = 3
+  ) %>% 
+  hc_xAxis(title = list(text = ""), crosshair = TRUE) %>% 
+  hc_yAxis(title = list(text = "Prix (€/kg net)"), opposite = FALSE) %>% 
+  hc_tooltip(
+    shared = TRUE, 
+    valueDecimals = 3,
+    pointFormat = '<span style="color:{point.color}">\u25CF</span> {series.name}: <b>{point.y} €</b><br/>'
+  ) %>% 
+  hc_legend(
+    enabled = TRUE,
+    layout = "horizontal",
+    align = "center",
+    verticalAlign = "bottom"
+  ) %>% 
+  hc_plotOptions(
+    line = list(
+      lineWidth = 1.5,
+      marker = list(enabled = FALSE)
+    )
+  ) %>% 
+  hc_exporting(enabled = TRUE) %>% 
+  hc_add_theme(hc_theme_smpl())
+
+```
+
+Le graphique ci-dessus retrace 30 ans de cotations. On y distingue trois phases : une longue stabilité (1996-2021), une accélération brutale post-COVID, et des sommets records en 2025 dépassant les 8 €/kg.
+
+## Saisonnalité des Prix par Mois et Année (Catégorie R3)
+
+Ce graphique en "heatmap" visualise l'évolution des prix moyens mensuels pour la catégorie **R3** sur l'ensemble de la période d'étude (1996-2025). Il permet d'identifier rapidement les mois historiquement plus chers ou moins chers.
+
+- **Couleur** : Une couleur plus foncée indique un prix moyen mensuel plus élevé.
+
+- **Axes** : L'axe horizontal représente les années, l'axe vertical les mois.
+
+```{r heatmap-saisonnalite}
+#| name: heatmap-saisonnalite
+#| message: false
+#| warning: false
+#| echo: false
+
+PRIX_MENSUEL_R3 <- PRIX_CARCASSE %>%
+  mutate(
+    annee = format(date, "%Y"), 
+    mois = factor(format(date, "%m"),
+                  levels = c("01", "02", "03", "04", "05", "06", 
+                             "07", "08", "09", "10", "11", "12"),
+                  labels = c("Jan", "Fév", "Mar", "Avr", "Mai", "Jun", 
+                             "Juil", "Août", "Sep", "Oct", "Nov", "Déc"))
+  ) %>%
+  group_by(annee, mois) %>%
+  summarise(prix_moyen_r3 = mean(R3, na.rm = TRUE), .groups = 'drop') %>%
+  filter(!is.na(prix_moyen_r3))
+
+hchart(PRIX_MENSUEL_R3, "heatmap", hcaes(x = annee, y = mois, value = prix_moyen_r3)) %>%
+  hc_title(text = "Saisonnalité des prix moyens de la carcasse R3") %>%
+  hc_subtitle(text = "Prix moyen mensuel (€/kg net) par année") %>%
+  hc_xAxis(title = list(text = "Année")) %>%
+  hc_yAxis(title = list(text = "Mois")) %>%
+  hc_colorAxis(
+    stops = color_stops(
+      colors = viridis(10, option = "magma", direction = -1) 
+    ),
+    title = list(text = "Prix (€/kg)")
+  ) %>%
+  hc_tooltip(
+    pointFormat = "Mois: {point.y}<br>Année: {point.x}<br>Prix moyen: {point.value:.3f} €/kg"
+  ) %>%
+  hc_exporting(enabled = TRUE) %>%
+  hc_add_theme(hc_theme_smpl())
+
+```
+La "heatmap" permet de confronter les mois aux années. Elle met en évidence que la saisonnalité historique (prix fermes en fin d'année) a été totalement "effacée" par la hausse structurelle inédite de 2024-2025.
+
+## Matrice d'interdépendance des prix
+
+Cette matrice de corrélation de Pearson permet d'évaluer l'intensité de la relation linéaire entre les différentes catégories de carcasses (U, R, O, P).
+
+- **Interprétation** : Une valeur de 1.00 (en noir/violet foncé) indique une corrélation parfaite.
+
+```{r correlation-matrix}
+#| name: correlation-matrix
+#| message: false
+#| warning: false
+#| echo: false
+
+cor_data <- PRIX_CARCASSE %>% 
+  select(U2:P4) %>% 
+  cor(use = "complete.obs")
+
+cor_long <- as.data.frame(cor_data) %>%
+  mutate(x = rownames(.)) %>%
+  pivot_longer(-x, names_to = "y", values_to = "value") %>%
+  mutate(value = round(value, 4))
+
+hchart(cor_long, "heatmap", hcaes(x = x, y = y, value = value)) %>%
+  hc_title(text = "Intensité des corrélations entre catégories") %>%
+  hc_colorAxis(
+    stops = color_stops(20, viridisLite::inferno(20, direction = -1)),
+    min = 0.85, 
+    max = 1
+  ) %>%
+  hc_xAxis(title = list(text = "")) %>%
+  hc_yAxis(title = list(text = "")) %>%
+  hc_tooltip(pointFormat = "Corrélation {point.x}/{point.y} : <b>{point.value}</b>") %>%
+  hc_add_theme(hc_theme_smpl())
+
+```
+Avant de modéliser, nous vérifions si les catégories évoluent ensemble. La matrice montre des coefficients proches de 1.00, prouvant une synchronisation totale du marché. Prédire la catégorie R3 revient donc à modéliser l'ensemble de la filière.
+
+# Prédiction Statistique (Modèle ARIMA)
+
+Pour anticiper le premier trimestre 2026, nous utilisons le modèle ARIMA. Ce choix est justifié par les analyses précédentes : la forte tendance (vue sur le graph chronologique) et les cycles (vus sur la heatmap) sont les deux piliers de cet algorithme.
+
+Lecture de la figure :
+
+- Ligne brune : Prix réels observés en 2024-2025.
+
+- Ligne rouge : Projection pour les 12 prochaines semaines.
+
+- Zone ombrée : Intervalle de confiance à 95% (marge d'erreur statistique).
+
+```{r arima-forecast}
+#| name: arima-forecast
+#| message: false
+#| warning: false
+#| echo: false
+
+ts_r3 <- ts(na.interp(PRIX_CARCASSE$R3), frequency = 52, start = c(1996, 1))
+
+fit_arima <- auto.arima(ts_r3, stepwise = TRUE, approximation = TRUE)
+
+forecast_r3 <- forecast(fit_arima, h = 12)
+
+derniere_date <- max(PRIX_CARCASSE$date)
+
+dates_futures <- derniere_date + weeks(1:12)
+
+df_forecast <- data.frame(
+  date = dates_futures,
+  point_forecast = as.numeric(forecast_r3$mean),
+  lo_95 = as.numeric(forecast_r3$lower[,2]),
+  hi_95 = as.numeric(forecast_r3$upper[,2])
+)
+
+hchart(PRIX_CARCASSE %>% filter(date > as.Date("2024-01-01")), 
+       "line", hcaes(x = date, y = R3), name = "Historique R3") %>%
+  hc_add_series(df_forecast, "line", hcaes(x = date, y = point_forecast), 
+                name = "Prévision ARIMA", color = "red") %>%
+  hc_add_series(df_forecast, "arearange", hcaes(x = date, low = lo_95, high = hi_95), 
+                name = "Incertitude (95%)", fillOpacity = 0.2, color = "red") %>%
+  hc_title(text = "Projection du prix R3 pour le 1er trimestre 2026") %>%
+  hc_subtitle(text = paste("Modèle identifié :", fit_arima$method)) %>%
+  hc_yAxis(title = list(text = "Prix (€/kg net)")) %>%
+  hc_add_theme(hc_theme_smpl())
+
+```
+Interprétation de la projection :
+
+- **Inertie haussière** : Le modèle confirme que la dynamique de 2025 ne s'essouffle pas immédiatement. Une stabilisation haute, voire une légère hausse vers les 8 €/kg, est le scénario le plus probable.
+
+- **Risques** : L'élargissement de la zone rouge montre qu'une correction vers les 7 €/kg reste statistiquement possible en cas de choc de marché.
+
+# Conclusion
+
+Cette étude démontre que le marché bovin français a basculé dans un nouveau paradigme de prix depuis 2021. La stabilité historique a laissé place à une volatilité record, mais dont la structure reste extrêmement cohérente (forte corrélation entre catégories). Les projections ARIMA suggèrent que ces niveaux de prix historiquement élevés s'installeront durablement au début de l'année 2026.
+
